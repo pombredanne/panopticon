@@ -20,7 +20,7 @@
 //!
 //! TODO
 
-use {Avalue, Constraint, ProgramPoint};
+use crate::{Avalue, Constraint, ProgramPoint};
 
 use panopticon_core::{Operation, Rvalue, execute};
 use std::collections::HashSet;
@@ -191,9 +191,10 @@ impl Avalue for Kset {
             Operation::ZeroExtend(ref sz, ref a) => map(a, &|a| execute(Operation::ZeroExtend(*sz, a))),
             Operation::SignExtend(ref sz, ref a) => map(a, &|a| execute(Operation::SignExtend(*sz, a))),
             Operation::Select(ref off, ref a, ref b) => permute(a, b, &|a, b| execute(Operation::Select(*off, a, b))),
+            Operation::Initialize(_,_) => Kset::Meet,
 
-            Operation::Load(ref r, ref a) => map(a, &|a| execute(Operation::Load(r.clone(), a))),
-            Operation::Store(ref r, ref a) => map(a, &|a| execute(Operation::Store(r.clone(), a))),
+            Operation::Load(ref r,e, sz, ref a) => map(a, &|a| execute(Operation::Load(r.clone(),e, sz, a))),
+            Operation::Store(ref r,e, sz, ref a,ref b) => permute(a, b, &|a, b| execute(Operation::Store(r.clone(), e, sz, a, b))),
 
             Operation::Phi(ref ops) => {
                 match ops.len() {
@@ -275,8 +276,8 @@ impl Avalue for Kset {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use interpreter::{approximate, results};
-    use panopticon_core::{BasicBlock, ControlFlowGraph, ControlFlowTarget, Function, Guard, Lvalue, Mnemonic, Operation, Rvalue, Statement};
+    use crate::interpreter::{approximate, results};
+    use panopticon_core::{BasicBlock, ControlFlowGraph, ControlFlowTarget, Function, Guard, Lvalue, Mnemonic, Operation, Region, Rvalue, Statement};
     use panopticon_data_flow::ssa_convertion;
     use panopticon_graph_algos::MutableGraphTrait;
     use std::borrow::Cow;
@@ -528,10 +529,10 @@ mod tests {
         cfg.add_edge(Guard::always(), v2, v4);
         cfg.add_edge(Guard::always(), v1, v3);
 
-        let mut func = Function::new("func".to_string(), "ram".to_string());
+        let mut func = Function::undefined(0, None, &Region::undefined("ram".to_owned(), 100), Some("test".to_owned()));
 
-        func.cflow_graph = cfg;
-        func.entry_point = Some(v0);
+        *func.cfg_mut() = cfg;
+        func.set_entry_point_ref(v0);
 
         println!("{}", func.to_dot());
 
@@ -663,10 +664,10 @@ mod tests {
 
         cfg.add_edge(Guard::always(), v0, v1);
 
-        let mut func = Function::new("func".to_string(), "ram".to_string());
+        let mut func = Function::undefined(0, None, &Region::undefined("ram".to_owned(), 100), Some("test".to_owned()));
 
-        func.cflow_graph = cfg;
-        func.entry_point = Some(v0);
+        *func.cfg_mut() = cfg;
+        func.set_entry_point_ref(v0);
 
         assert!(ssa_convertion(&mut func).is_ok());
 

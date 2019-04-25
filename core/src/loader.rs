@@ -19,7 +19,7 @@
 //! Loader for 32 and 64-bit ELF, PE, and Mach-o files.
 
 
-use {Bound, CallTarget, Layer, Program, Project, Region, Result, Rvalue};
+use crate::{Bound, CallTarget, Layer, Program, Project, Region, Result, Rvalue};
 use goblin::{self, Hint, archive, elf, mach, pe};
 use goblin::elf::program_header;
 
@@ -133,7 +133,7 @@ pub fn load_mach(bytes: &[u8], offset: usize, name: String) -> Result<(Project, 
     }
 
     debug!("Imports: {:?}", &proj.imports);
-
+    prog.imports = proj.imports.clone();
     proj.comments.insert(("base".to_string(), entry), "main".to_string());
     proj.code.push(prog);
 
@@ -189,7 +189,7 @@ fn load_elf(bytes: &[u8], name: String) -> Result<(Project, Machine)> {
     }
 
     let name = if let &Some(ref soname) = &binary.soname {
-        soname.to_owned()
+        soname.to_string()
     } else {
         name
     };
@@ -236,9 +236,9 @@ fn load_elf(bytes: &[u8], name: String) -> Result<(Project, Machine)> {
         add_sym(&mut prog, sym, name);
         seen_syms.insert(sym.st_value);
 
-        if sym.is_function() {
-            let name = &binary.dynstrtab[sym.st_name];
-            if !resolve_import_address(&mut proj, &binary.pltrelocs, name) {
+        let name = &binary.dynstrtab[sym.st_name];
+        if !resolve_import_address(&mut proj, &binary.pltrelocs, name) {
+            if sym.is_function() {
                 if !resolve_import_address(&mut proj, &binary.dynrelas, name) {
                     resolve_import_address(&mut proj, &binary.dynrels, name);
                 }
@@ -255,7 +255,7 @@ fn load_elf(bytes: &[u8], name: String) -> Result<(Project, Machine)> {
         }
         seen_syms.insert(sym.st_value);
     }
-
+    prog.imports = proj.imports.clone();
     proj.comments.insert(("base".to_string(), entry), "main".to_string());
     proj.code.push(prog);
 
@@ -323,7 +323,7 @@ fn load_pe(bytes: &[u8], name: String) -> Result<(Project, Machine)> {
             .add_vertex(
                 CallTarget::Todo(
                     Rvalue::new_u64(export.rva as u64 + image_base),
-                    Some(export.name),
+                    Some(export.name.to_string()),
                     Uuid::new_v4(),
                 )
             );
@@ -335,7 +335,7 @@ fn load_pe(bytes: &[u8], name: String) -> Result<(Project, Machine)> {
             &import,
             import.rva + pe.image_base
         );
-        prog.call_graph.add_vertex(CallTarget::Symbolic(import.name, Uuid::new_v4()));
+        prog.call_graph.add_vertex(CallTarget::Symbolic(import.name.into_owned(), Uuid::new_v4()));
     }
 
     proj.comments.insert(("base".to_string(), entry), "main".to_string());

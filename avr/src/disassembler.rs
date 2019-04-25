@@ -19,7 +19,7 @@
 use panopticon_core::{Architecture, Guard, Lvalue, Match, Region, Result, Rvalue, State, Statement};
 use std::borrow::Cow;
 use std::convert::Into;
-use syntax;
+use crate::syntax;
 
 #[derive(Clone,Debug)]
 pub enum Avr {}
@@ -286,7 +286,7 @@ pub fn skip(n: &'static str, expect: bool) -> Box<Fn(&mut State<Avr>) -> bool> {
                         vec![],
                         &|_cg: &mut Mcu| {
                             rreil!{
-                    load/io ioreg:8, (a);
+                    load/io/be/8 ioreg:8, (a);
                 }
                         },
                     )
@@ -383,7 +383,7 @@ pub fn binary_imm(n: &'static str, sem: fn(Lvalue, u64, &mut Mcu) -> Result<Vec<
                         vec![],
                         &|_cg: &mut Mcu| {
                             rreil!{
-                    load/io ioreg:8, (a);
+                    load/io/be/8 ioreg:8, (a);
                 }
                         },
                     )
@@ -663,8 +663,8 @@ mod tests {
             0x21,0x2c, // 6:8 mov
         ),
         );
-        let fun = Function::disassemble::<Avr>(None, Mcu::atmega8(), &reg, 0);
-        let cg = &fun.cflow_graph;
+        let fun = Function::new::<Avr>(0, &reg, Some("test".to_owned()), Mcu::atmega8()).unwrap();
+        let cg = &fun.cfg();
 
         for x in cg.vertices() {
             match cg.vertex_label(x) {
@@ -710,9 +710,8 @@ mod tests {
             0x21,0x2c, // 8:10 mov
         ),
         );
-        let fun = Function::disassemble::<Avr>(None, Mcu::atmega8(), &reg, 0);
-        let cg = &fun.cflow_graph;
-
+        let fun = Function::new::<Avr>(0, &reg, Some("test".to_owned()), Mcu::atmega8()).unwrap();
+        let cg = &fun.cfg();
         for x in cg.vertices() {
             match cg.vertex_label(x) {
                 Some(&ControlFlowTarget::Resolved(ref bb)) => {
@@ -759,8 +758,8 @@ mod tests {
             0x21,0x2c, // 6:8 mov
         ),
         );
-        let fun = Function::disassemble::<Avr>(None, Mcu::atmega8(), &reg, 0);
-        let cg = &fun.cflow_graph;
+        let fun = Function::new::<Avr>(0, &reg, Some("test".to_owned()), Mcu::atmega8()).unwrap();
+        let cg = &fun.cfg();
 
         for x in cg.vertices() {
             match cg.vertex_label(x) {
@@ -811,8 +810,8 @@ mod tests {
                 0xB0,0xE0, //       10 ldi     r27, 0
             ),
         );
-        let fun = Function::disassemble::<Avr>(None, Mcu::atmega8(), &reg, 0);
-        let cfg = &fun.cflow_graph;
+        let fun = Function::new::<Avr>(0, &reg, Some("test".to_owned()), Mcu::atmega8()).unwrap();
+        let cfg = &fun.cfg();
 
         assert_eq!(cfg.num_vertices(), 3);
         assert_eq!(cfg.num_edges(), 3);
@@ -873,8 +872,8 @@ mod tests {
             }
         }
 
-        for x in fun.cflow_graph.edges() {
-            let cg = &fun.cflow_graph;
+        for x in fun.cfg().edges() {
+            let cg = &fun.cfg();
             let from = cg.source(x);
             let to = cg.target(x);
             let from_ident = to_ident(cg.vertex_label(from));
@@ -956,8 +955,8 @@ mod tests {
             (vec![0x81,0x93],"st",vec![Rvalue::Variable{ name: Cow::Borrowed("Z+"), size: 16, offset: 0, subscript: None }, rreil_rvalue!{ R24:8 }]),
             (vec![0x03,0x2e],"mov",vec![rreil_rvalue!{ R0:8 },rreil_rvalue!{ R19:8 }]),
             (vec![0x10,0xe0],"ldi",vec![rreil_rvalue!{ R17:8 }, Rvalue::new_u8(0x00)]),
-            (vec![0xcd,0xb7],"in",vec![rreil_rvalue!{ R28:8 }, rreil_rvalue!{ [0x3d]:6 }]),
-            (vec![0xde,0xbf],"out",vec![rreil_rvalue!{ [0x3e]:6 }, rreil_rvalue!{ R29:8 }]),
+            (vec![0xcd,0xb7],"in",vec![rreil_rvalue!{ R28:8 }, rreil_rvalue!{ [0x3d]:8 }]),
+            (vec![0xde,0xbf],"out",vec![rreil_rvalue!{ [0x3e]:8 }, rreil_rvalue!{ R29:8 }]),
             (vec![0xc8,0x95],"lpm",vec![]),
             (vec![0xc0,0x9a],"sbi",vec![rreil_rvalue!{ [0x18]:6 }, rreil_rvalue!{ [0]:3}]),
             (vec![0xc0,0x98],"cbi",vec![rreil_rvalue!{ [0x18]:6 }, rreil_rvalue!{ [0]:3}]),

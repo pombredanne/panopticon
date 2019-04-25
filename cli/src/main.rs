@@ -12,17 +12,22 @@ extern crate futures;
 #[macro_use]
 extern crate log;
 extern crate env_logger;
+extern crate termcolor;
+extern crate atty;
 
-use futures::Stream;
 use panopticon_amd64 as amd64;
-use panopticon_analysis::pipeline;
+use panopticon_analysis::analyze;
 use panopticon_avr as avr;
-use panopticon_core::{ControlFlowTarget, Function, Machine, loader};
-use panopticon_graph_algos::GraphTrait;
+use panopticon_core::{Machine, Function, FunctionKind, Program, Result, loader};
 use std::path::Path;
 use std::result;
-use std::sync::Arc;
 use structopt::StructOpt;
+use std::io::Write;
+use termcolor::{BufferWriter, ColorChoice, WriteColor};
+use termcolor::Color::*;
+
+#[macro_use]
+mod display;
 
 mod errors {
     error_chain! {
@@ -31,14 +36,26 @@ mod errors {
         }
     }
 }
-use errors::*;
 
 #[derive(StructOpt, Debug)]
 #[structopt(name = "panop", about = "A libre cross-platform disassembler.")]
 struct Args {
+    #[structopt(long = "reverse-deps", help = "Print every function that calls the function in -f")]
+    reverse_deps: bool,
+    /// Dumps the il of the matched function
+    #[structopt(long = "il", help = "Print the rreil of this function")]
+    dump_il: bool,
+    #[structopt(long = "color", help = "Forces coloring, even when piping to a file, etc.")]
+    color: bool,
+    /// Print every function the function calls
+    #[structopt(short = "c", long = "calls", help = "Print every address of every function this function calls")]
+    calls: bool,
     /// The specific function to disassemble
-    #[structopt(short = "f", long = "function", help = "Disassemble the given function")]
+    #[structopt(short = "f", long = "function", help = "Disassemble the given function, or any of its aliases")]
     function_filter: Option<String>,
+    /// The specific function address to disassemble
+    #[structopt(short = "a", long = "address", help = "Disassemble the function at the given address")]
+    address_filter: Option<String>,
     /// The binary to disassemble
     #[structopt(help = "The binary to disassemble")]
     binary: String,
@@ -51,81 +68,160 @@ fn exists_path_val(filepath: &str) -> result::Result<(), String> {
     }
 }
 
-fn get_entry_point(func: &Function) -> Option<u64> {
-    if let Some(ref entry) = func.entry_point {
-        if let Some(&ControlFlowTarget::Resolved(ref bb)) = func.cflow_graph.vertex_label(*entry) {
-            return Some(bb.area.start);
-        }
-    }
-
-    None
+#[derive(Debug)]
+struct Filter {
+    name: Option<String>,
+    addr: Option<u64>,
 }
 
-fn disassemble(args: Args) -> Result<()> {
-    let binary = args.binary;
-    let filter = args.function_filter;
-    let (mut proj, machine) = loader::load(Path::new(&binary))?;
-    let maybe_prog = proj.code.pop();
-    let reg = proj.data.dependencies.vertex_label(proj.data.root).unwrap().clone();
+impl Filter {
+    pub fn filtering(&self) -> bool {
+        self.name.is_some() || self.addr.is_some()
+    }
+    pub fn is_match(&self, func: &Function) -> bool {
+        if let Some(ref name) = self.name {
+            if name == &func.name || func.aliases().contains(name){ return true }
+        }
+        if let Some(ref addr) = self.addr {
+            return *addr == func.start()
+        }
+        !self.filtering()
+    }
+    pub fn is_match_with(&self, name: &str, addr: u64) -> bool {
+        if let Some(ref name_) = self.name {
+            if name == name_ { return true }
+        }
+        if let Some(ref addr_) = self.addr {
+            return addr == *addr_
+        }
+        !self.filtering()
+    }
+}
 
-    if let Some(prog) = maybe_prog {
-        let prog = Arc::new(prog);
-        let pipe = {
-            let prog = prog.clone();
-            match machine {
-                Machine::Avr => pipeline::<avr::Avr>(prog, reg.clone(), avr::Mcu::atmega103()),
-                Machine::Ia32 => pipeline::<amd64::Amd64>(prog, reg.clone(), amd64::Mode::Protected),
-                Machine::Amd64 => pipeline::<amd64::Amd64>(prog, reg.clone(), amd64::Mode::Long),
+fn print_reverse_deps<W: Write + WriteColor>(mut fmt: W, program: &Program, filter: &Filter) -> Result<()> {
+    let name_and_address = {
+        if let Some(f) = program.find_function_by(|f| filter.is_match_with(&f.name, f.start())) {
+            Some((f.start(), &f.name))
+        } else {
+            // not a function, so we search imports
+            let mut name_and_address = None;
+            for (addr, name) in program.imports.iter() {
+                if filter.is_match_with(name, *addr) {
+                    debug!("Found import with matching name or address, {:#x} - {}", addr, name);
+                    name_and_address = Some((*addr, name));
+                }
             }
-        };
-
-        info!("disassembly thread started");
-        match filter {
-            Some(filter) => {
-                for function in pipe.wait() {
-                    if let Ok(function) = function {
-                        if filter == function.name {
-                            println!("{}", function.display_with(&prog.clone()));
-                            break;
+            name_and_address
+        }
+    };
+    match name_and_address {
+        Some((addr, name)) => {
+            let mut reverse_deps: Vec<_> = program.functions().filter_map(|f| {
+                let call_addresses = f.collect_call_addresses();
+                debug!("Total call addresses for {}: {}", f.name, call_addresses.len());
+                if call_addresses.contains(&addr) {
+                    Some((f.start(), f.name.to_string()))
+                } else {
+                    for call_address in call_addresses {
+                        let function = program.find_function_by(|f| f.start() == call_address).expect(&format!("{} has a call address {:#x}, but there isn't a function with that address in the program object", f.name, call_address));
+                        debug!("Checking function {} with call address {:#x} for plt stub", function.name, call_address);
+                        match function.kind() {
+                            &FunctionKind::Stub { ref plt_address, ref name } => {
+                                debug!("Function {} is a plt stub for {}", function.name, name);
+                                if *plt_address == addr {
+                                    debug!("Function {} plt address {:#x} matches reverse dep address {:#x}, returning", f.name, plt_address, addr);
+                                    return Some((f.start(), f.name.to_string()))
+                                }
+                            },
+                            _ => ()
                         }
                     }
-                }
+                    None
+               }
+            }).collect();
+
+            reverse_deps.sort();
+
+            write!(fmt, "Found ")?;
+            color!(fmt, Green, reverse_deps.len().to_string())?;
+            write!(fmt, " reverse dependencies for ")?;
+            color_bold!(fmt, Yellow, name)?;
+            write!(fmt, " @ ")?;
+            color_bold!(fmt, Red, format!("{:#x}", addr))?;
+            writeln!(fmt, "")?;
+            for (addr, name) in reverse_deps {
+               color_bold!(fmt, Red, format!("{: >16x} ", addr))?;
+               color_bold!(fmt, Yellow, name)?;
+               writeln!(fmt, "")?;
             }
-            None => {
-                let mut functions = pipe.wait()
-                    .filter_map(|function| if let Ok(function) = function {
-                        info!("{}", function.uuid);
-                        Some(function)
-                    } else {
-                        None
-                    })
-                    .collect::<Vec<_>>();
+        },
+        None => {
+            return Err(format!("function {:?} did not apply",  filter).into());
+        }
+    }
+    Ok(())
+}
 
-                functions.sort_by(|f1, f2| {
-                    use std::cmp::Ordering::*;
-                    let entry1 = get_entry_point(f1);
-                    let entry2 = get_entry_point(f2);
-                    match (entry1, entry2) {
-                        (Some(entry1), Some(entry2)) => entry1.cmp(&entry2),
-                        (Some(_), None) => Greater,
-                        (None, Some(_)) => Less,
-                        (None, None) => Equal,
-                    }
-                });
+fn disassemble(binary: &str) -> Result<Program> {
+    let (mut proj, machine) = loader::load(Path::new(&binary))?;
+    let program = proj.code.pop().unwrap();
+    let reg = proj.region().clone();
+    info!("disassembly thread started");
+    Ok(match machine {
+        Machine::Avr => analyze::<avr::Avr>(program, reg.clone(), avr::Mcu::atmega103()),
+        Machine::Ia32 => analyze::<amd64::Amd64>(program, reg.clone(), amd64::Mode::Protected),
+        Machine::Amd64 => analyze::<amd64::Amd64>(program, reg.clone(), amd64::Mode::Long),
+    }?)
+}
 
-                for function in functions {
-                    println!("{}", function.display_with(&prog.clone()));
-                }
+fn app_logic(fmt: &mut termcolor::Buffer, program: Program, args: Args) -> Result<()> {
+    let filter = Filter { name: args.function_filter, addr: args.address_filter.map(|addr| u64::from_str_radix(&addr, 16).unwrap()) };
+
+    debug!("Program.imports: {:#?}", program.imports);
+    if args.reverse_deps && filter.filtering() {
+        return print_reverse_deps(fmt, &program, &filter);
+    }
+    let mut functions = program.functions().filter_map(|f| if filter.is_match(f) { Some(f) } else { None }).collect::<Vec<&Function>>();
+    info!("disassembly thread finished with {} functions", functions.len());
+
+    functions.sort_by(|f1, f2| {
+        let entry1 = f1.start();
+        let entry2 = f2.start();
+        entry1.cmp(&entry2)
+    });
+
+    for function in functions {
+        let mut bbs = function.basic_blocks().collect::<Vec<_>>();
+        // sort them by start so we can use them later
+        bbs.sort_by(|bb1, bb2| bb1.area.start.cmp(&bb2.area.start));
+
+        display::print_function(fmt, &function, &bbs, &program)?;
+        if args.calls {
+            let calls = function.collect_call_addresses();
+            write!(fmt, "Calls (")?;
+            color!(fmt, Green, calls.len().to_string())?;
+            writeln!(fmt, "):")?;
+            for addr in calls {
+                color_bold!(fmt, Red, format!("{:>8x}", addr))?;
+                writeln!(fmt, "")?;
             }
         }
-        info!("disassembly thread finished");
+        if args.dump_il {
+            display::print_rreil(fmt, &bbs)?;
+        }
+        writeln!(fmt, "Aliases: {:?}", function.aliases())?;
     }
     Ok(())
 }
 
 fn run(args: Args) -> Result<()> {
     exists_path_val(&args.binary)?;
-    disassemble(args)?;
+    let program = disassemble(&args.binary)?;
+    let cc = if args.color || atty::is(atty::Stream::Stdout) { ColorChoice::Auto } else { ColorChoice::Never };
+    let writer = BufferWriter::stdout(cc);
+    let mut fmt = writer.buffer();
+    app_logic(&mut fmt, program, args)?;
+    writer.print(&fmt)?;
     Ok(())
 }
 
@@ -135,6 +231,7 @@ fn main() {
         Ok(()) => {}
         Err(s) => {
             error!("Error: {}", s);
+            println!("Error: {}", s);
             ::std::process::exit(1);
         }
     }

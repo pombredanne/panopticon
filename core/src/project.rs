@@ -21,7 +21,8 @@
 //! Projects are a set of `Program`s, associated memory `Region`s and comments.
 
 
-use {CallGraphRef, Function, Program, Region, Result, World};
+use crate::{CallGraphRef, Function, Program, Region, Result, World};
+use panopticon_graph_algos::GraphTrait;
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 use flate2::Compression;
 use flate2::read::ZlibDecoder;
@@ -61,6 +62,12 @@ impl Project {
             comments: HashMap::new(),
             imports: HashMap::new(),
         }
+    }
+
+    /// Returns this project's root Region
+    pub fn region(&self) -> &Region {
+        // this cannot fail because World::new guarantees that data.root = r
+        self.data.dependencies.vertex_label(self.data.root).unwrap()
     }
 
     /// Reads a serialized project from disk.
@@ -164,7 +171,7 @@ impl Project {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use region::Region;
+    use crate::region::Region;
 
     #[test]
     fn new() {

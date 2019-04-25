@@ -16,11 +16,11 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-use errors::*;
+use crate::errors::*;
 use panopticon_abstract_interp::{Kset, approximate};
 use panopticon_core::{BasicBlock, ControlFlowTarget, Function, Lvalue, Rvalue};
 use panopticon_graph_algos::GraphTrait;
-use singleton::{AbstractInterpretation, Panopticon, VarName};
+use crate::singleton::{AbstractInterpretation, Panopticon, VarName};
 use std::collections::{HashMap, HashSet};
 use std::iter::{FromIterator, IntoIterator};
 use uuid::Uuid;
@@ -193,7 +193,7 @@ fn diff_abstract_interpretations(a: Option<&AbstractInterpretation>, b: Option<&
     let blocks = func.postorder()
         .into_iter()
         .filter_map(
-            |vx| if let Some(&ControlFlowTarget::Resolved(ref bb)) = func.cflow_graph.vertex_label(vx) {
+            |vx| if let Some(&ControlFlowTarget::Resolved(ref bb)) = func.cfg().vertex_label(vx) {
                 Some(bb)
             } else {
                 None

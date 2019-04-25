@@ -53,18 +53,18 @@ pub struct ProgramPoint {
 /// Abstract Domain. Models both under- and over-approximation.
 pub trait Avalue: Clone + PartialEq + Eq + Hash + Debug + Serialize + for<'a> Deserialize<'a> {
     /// Alpha function. Returns domain element that approximates the concrete value the best
-    fn abstract_value(&Rvalue) -> Self;
+    fn abstract_value(_: &Rvalue) -> Self;
     /// Alpha function. Returns domain element that approximates the concrete value that fullfil
     /// the constraint the best.
-    fn abstract_constraint(&Constraint) -> Self;
+    fn abstract_constraint(_: &Constraint) -> Self;
     /// Execute the abstract version of the operation, yielding the result.
-    fn execute(&ProgramPoint, &Operation<Self>) -> Self;
+    fn execute(_: &ProgramPoint, _: &Operation<Self>) -> Self;
     /// Narrows `self` with the argument.
-    fn narrow(&self, &Self) -> Self;
+    fn narrow(&self, _: &Self) -> Self;
     /// Widens `self` with the argument.
     fn widen(&self, other: &Self) -> Self;
     /// Computes the lowest upper bound of self and the argument.
-    fn combine(&self, &Self) -> Self;
+    fn combine(&self, _: &Self) -> Self;
     /// Returns true if `self` <= `other`.
     fn more_exact(&self, other: &Self) -> bool;
     /// Returns the meet of the domain
@@ -77,11 +77,7 @@ pub trait Avalue: Clone + PartialEq + Eq + Hash + Debug + Serialize + for<'a> De
 /// fixed point iteration and the widening strategy outlined in
 /// Bourdoncle: "Efficient chaotic iteration strategies with widenings".
 pub fn approximate<A: Avalue>(func: &Function, fixed: &HashMap<(Cow<'static, str>, usize), A>) -> Result<HashMap<Lvalue, A>> {
-    if func.entry_point.is_none() {
-        return Err("function has no entry point".into());
-    }
-
-    let wto = weak_topo_order(func.entry_point.unwrap(), &func.cflow_graph);
+    let wto = weak_topo_order(func.entry_point_ref(), func.cfg());
     let edge_ops = flag_operations(func);
     fn stabilize<A: Avalue>(
         h: &Vec<Box<HierarchicalOrdering<ControlFlowRef>>>,
@@ -232,8 +228,8 @@ pub fn approximate<A: Avalue>(func: &Function, fixed: &HashMap<(Cow<'static, str
     let mut sizes = HashMap::<Cow<'static, str>, usize>::new();
     let mut constr = HashMap::<Lvalue, A>::new();
 
-    for vx in func.cflow_graph.vertices() {
-        if let Some(&ControlFlowTarget::Resolved(ref bb)) = func.cflow_graph.vertex_label(vx) {
+    for vx in func.cfg().vertices() {
+        if let Some(&ControlFlowTarget::Resolved(ref bb)) = func.cfg().vertex_label(vx) {
             bb.execute(
                 |i| if let Lvalue::Variable { ref name, ref size, .. } = i.assignee {
                     let t = *size;
@@ -244,9 +240,9 @@ pub fn approximate<A: Avalue>(func: &Function, fixed: &HashMap<(Cow<'static, str
         }
     }
 
-    for vx in func.cflow_graph.vertices() {
-        for e in func.cflow_graph.in_edges(vx) {
-            if let Some(&Guard::Predicate { .. }) = func.cflow_graph.edge_label(e) {
+    for vx in func.cfg().vertices() {
+        for e in func.cfg().in_edges(vx) {
+            if let Some(&Guard::Predicate { .. }) = func.cfg().edge_label(e) {
                 match edge_ops.get(&e).cloned() {
                     Some(Operation::Equal(left @ Rvalue::Constant { .. }, right @ Rvalue::Variable { .. })) => {
                         constr.insert(
@@ -316,13 +312,13 @@ pub fn approximate<A: Avalue>(func: &Function, fixed: &HashMap<(Cow<'static, str
 
     match wto {
         HierarchicalOrdering::Component(ref v) => {
-            stabilize(v, &func.cflow_graph, &constr, &sizes, &mut ret, fixed)?;
+            stabilize(v, &func.cfg(), &constr, &sizes, &mut ret, fixed)?;
         }
         HierarchicalOrdering::Element(ref v) => {
             execute(
                 *v,
                 false,
-                &func.cflow_graph,
+                &func.cfg(),
                 &constr,
                 &sizes,
                 &mut ret,
@@ -352,8 +348,8 @@ pub fn approximate<A: Avalue>(func: &Function, fixed: &HashMap<(Cow<'static, str
 /// Given a function and an abstract interpretation result this functions returns that variable
 /// names and abstract values that live after the function returns.
 pub fn results<A: Avalue>(func: &Function, vals: &HashMap<Lvalue, A>) -> HashMap<(Cow<'static, str>, usize), A> {
-    let cfg = &func.cflow_graph;
-    let idom = immediate_dominator(func.entry_point.unwrap(), cfg);
+    let cfg = func.cfg();
+    let idom = immediate_dominator(func.entry_point_ref(), cfg);
     let mut ret = HashMap::<(Cow<'static, str>, usize), A>::new();
     let mut names = HashSet::<Cow<'static, str>>::new();
 
@@ -422,8 +418,8 @@ pub fn lift<A, B, F>(op: &Operation<B>, m: &F) -> Operation<A>
     let args = op.operands().iter().cloned().map(m).collect::<Vec<_>>();
     match op {
         &Operation::Phi(_) => Operation::Phi(args),
-        &Operation::Load(ref s, _) => Operation::Load(s.clone(), args[0].clone()),
-        &Operation::Store(ref s, _) => Operation::Store(s.clone(), args[0].clone()),
+        &Operation::Load(ref s, e, sz, _) => Operation::Load(s.clone(), e, sz, args[0].clone()),
+        &Operation::Store(ref s, e, sz, _, _) => Operation::Store(s.clone(), e, sz, args[0].clone(), args[1].clone()),
         &Operation::Add(_, _) => Operation::Add(args[0].clone(), args[1].clone()),
         &Operation::Subtract(_, _) => Operation::Subtract(args[0].clone(), args[1].clone()),
         &Operation::Multiply(_, _) => Operation::Multiply(args[0].clone(), args[1].clone()),
@@ -446,13 +442,14 @@ pub fn lift<A, B, F>(op: &Operation<B>, m: &F) -> Operation<A>
         &Operation::Select(ref off, _, _) => Operation::Select(*off, args[0].clone(), args[1].clone()),
         &Operation::ZeroExtend(ref sz, _) => Operation::ZeroExtend(*sz, args[0].clone()),
         &Operation::SignExtend(ref sz, _) => Operation::SignExtend(*sz, args[0].clone()),
+        &Operation::Initialize(ref r, sz) => Operation::Initialize(r.clone(), sz),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use panopticon_core::{BasicBlock, Bound, ControlFlowGraph, ControlFlowTarget, Function, Guard, Lvalue, Mnemonic, Operation, Rvalue, Statement};
+    use panopticon_core::{BasicBlock, Bound, ControlFlowGraph, ControlFlowTarget, Function, Guard, Lvalue, Mnemonic, Operation, Region, Rvalue, Statement};
     use panopticon_data_flow::ssa_convertion;
     use panopticon_graph_algos::MutableGraphTrait;
     use std::borrow::Cow;
@@ -759,10 +756,10 @@ mod tests {
         cfg.add_edge(g.clone(), v0, v1);
         cfg.add_edge(g.clone(), v1, v1);
 
-        let mut func = Function::new("func".to_string(), "ram".to_string());
+        let mut func = Function::undefined(0, None, &Region::undefined("ram".to_owned(), 100), Some("test".to_owned()));
 
-        func.cflow_graph = cfg;
-        func.entry_point = Some(v0);
+        *func.cfg_mut() = cfg;
+        func.set_entry_point_ref(v0);
 
         assert!(ssa_convertion(&mut func).is_ok());
 
@@ -932,10 +929,10 @@ mod tests {
         cfg.add_edge(g.clone(), v0, v1);
         cfg.add_edge(g.clone(), v1, v1);
 
-        let mut func = Function::new("func".to_string(), "ram".to_string());
+        let mut func = Function::undefined(0, None, &Region::undefined("ram".to_owned(), 100), Some("test".to_owned()));
 
-        func.cflow_graph = cfg;
-        func.entry_point = Some(v0);
+        *func.cfg_mut() = cfg;
+        func.set_entry_point_ref(v0);
 
         assert!(ssa_convertion(&mut func).is_ok());
 

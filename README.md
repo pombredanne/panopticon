@@ -1,5 +1,9 @@
 [![Gitter](https://badges.gitter.im/das-labor/panopticon.svg)](https://gitter.im/das-labor/panopticon) [![Build Status](https://travis-ci.org/das-labor/panopticon.svg?branch=master)](https://travis-ci.org/das-labor/panopticon) [![Build status](https://ci.appveyor.com/api/projects/status/ht1wnf4qc0iocoar?svg=true)](https://ci.appveyor.com/project/flanfly/panopticon) [![Coverage Status](https://coveralls.io/repos/das-labor/panopticon/badge.svg?branch=master&service=github)](https://coveralls.io/github/das-labor/panopticon?branch=master)
 
+# DEPRECATED
+
+**The Panopticon project moved to [Gitlab](https://gitlab.com/p8n/panopticon) and was restructed into multiple crates. The Qt GUI was replaced with [Verso](https://gitlab.com/p8n/verso).** I will merge PRs but won't do any substantial work on this version. Most links below are dead.
+
 ![Panopticon](https://raw.githubusercontent.com/das-labor/panopticon/master/logo.png)
 
 # Panopticon - A Libre Cross Platform Disassembler
@@ -59,7 +63,7 @@ cargo build --all --release
 Install the [Qt 5.4 SDK](http://download.qt.io/official_releases/online_installers/qt-unified-windows-x86-online.exe),
 the [Rust toolchain](https://static.rust-lang.org/rustup/dist/x86_64-pc-windows-msvc/rustup-init.exe)
 and [CMake](https://cmake.org/files/v3.6/cmake-3.6.1-win64-x64.msi).
-Panopticon can be build using ``cargo build --all --release``.
+Panopticon can be built using ``cargo build --all --release``.
 
 **OS X**
 
@@ -81,7 +85,7 @@ After installation start the ``panopticon`` binary. If you build it from
 source you can type:
 
 ```bash
-cargo run -p panopticon-qt --release
+cargo run --bin panopticon --release
 ```
 
 For detailed usage information see the
